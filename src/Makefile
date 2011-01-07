@@ -18,6 +18,7 @@ LCFLAGS = \
 
 OCAMLINC = \
 -I $(JSTAR_PREFIX)/lib \
+-I $(JSTAR_PREFIX)/src/utils \
 -I $(JSTAR_PREFIX)/src/prover_syntax \
 -I $(JSTAR_PREFIX)/src/plugin_interface \
 -I $(MLGMPIDL_PREFIX)/lib \
@@ -25,12 +26,12 @@ OCAMLINC = \
 
 OCAMLLDFLAGS = \
 -noautolink -ccopt "$(LCFLAGS)" \
-bigarray.cma gmp.cma apron.cma box.cma polka.cma prover_syntax.a plugin_callback.cmi \
+bigarray.cma gmp.cma apron.cma box.cma polka.cma utils.a prover_syntax.a plugin_callback.cmi \
 -cclib "-lpolkaRll_caml -lpolkaRll_debug -loctD_caml -loctD -lboxD_caml -lboxD_debug -litv_debug -lapron_caml_debug -lapron_debug -lgmp_caml -lmpfr -lgmpxx -lgmp -lbigarray -lcamlidl"
 
 OCAMLOPTLDFLAGS = \
 -noautolink -verbose -ccopt "$(LCFLAGS)" \
-bigarray.cmxa gmp.cmxa apron.cmxa box.cmxa polka.cmxa prover_syntax.cmxa plugin_callback.cmx \
+bigarray.cmxa gmp.cmxa apron.cmxa box.cmxa polka.cmxa utils.cmxa prover_syntax.cmxa plugin_callback.cmx \
 -cclib "-lpolkaRll_caml -lpolkaRll_debug -loctD_caml -loctD -lboxD_caml -lboxD_debug -litv_debug -lapron_caml_debug -lapron_debug -lgmp_caml -lmpfr -lgmpxx -lgmp -lbigarray -lcamlidl"
 
 ifndef BIN
