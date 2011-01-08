@@ -91,7 +91,7 @@ let create_vars_from_pform_at (pf_at : pform_at) : unit =
 (* Translates term to Apron tree expression of level 1 *)
 let rec tr_args (arg : args) : Texpr1.expr =
   let mk_binop op e1 e2 =
-    Texpr1.Binop (op, e1, e2, Texpr1.Int, Texpr1.Near) in
+    Texpr1.Binop (op, e1, e2, Texpr1.Real, Texpr1.Near) in
   match arg with
   | Arg_op ("builtin_plus", [a1; a2]) -> 
     mk_binop Texpr1.Add (tr_args a1) (tr_args a2)
@@ -110,7 +110,7 @@ let rec tr_args (arg : args) : Texpr1.expr =
 (* Translates formula to Apron tree constraint of level 1 *)
 let tr_pform_at (env : Environment.t) (pf_at : pform_at) : Tcons1.t =
   let mk_sub e1 e2 = 
-    Texpr1.Binop (Texpr1.Sub, e1, e2, Texpr1.Int, Texpr1.Near) in
+    Texpr1.Binop (Texpr1.Sub, e1, e2, Texpr1.Real, Texpr1.Near) in
   let mk_cons e typ =
     Tcons1.make (Texpr1.of_expr env e) typ in
   match pf_at with 
@@ -192,6 +192,10 @@ let rec abs_pform (f : pform) : pform =
     in
     range2 0 []    
   in
+  (* Hack *)
+  let array_print fmt x = 
+    Tcons1.array_print fmt x
+  in
   match f with
   | [P_Or (f1, f2)] -> 
     [P_Or (abs_pform f1, abs_pform f2)]
@@ -215,21 +219,26 @@ let rec abs_pform (f : pform) : pform =
     (* Fill the array with translated numerical formulae *)
     list_iteri (fun i pf_at -> Tcons1.array_set tab i (tr_pform_at env pf_at)) num_forms;
     if Config.symb_debug() then
-      (let array_print fmt x = Tcons1.array_print fmt x in
-      Format.printf "\nArray constraints: %a@.\n%!" array_print tab);
+      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;
 
-(*
     (* Perform the abstraction on the conjunction of the constraints *)
     let abs = Abstract1.of_tcons_array manager env tab in
+    Abstract1.minimize_environment manager abs;
     if Config.symb_debug() then
       Format.printf "\nAbstracted constraints: %a@.\n%!" Abstract1.print abs;    
     
     (* Convert the abstract value back to conjunction of constraints *)
+    let tab2 = Abstract1.to_lincons_array manager abs in
+    if Config.symb_debug() then
+      (let lincons1_array_print fmt x =
+  Lincons1.array_print fmt x in
+      Format.printf "\nArray constraints: %a@.\n%!" lincons1_array_print tab2;);
     let tab = Abstract1.to_tcons_array manager abs in
-*)
-    let tab_indices = range (Tcons1.array_length tab) in
-    
+    if Config.symb_debug() then
+      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;
+
     (* Translate abstracted constraints back to Psyntax formulae *)
+    let tab_indices = range (Tcons1.array_length tab) in
     let abs_num_forms = List.map (fun i -> tr_tcons (Tcons1.array_get tab i)) tab_indices in
 
     (* Unite abstracted formulae with the remainder *)
