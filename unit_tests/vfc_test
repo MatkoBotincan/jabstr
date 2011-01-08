@@ -1,0 +1,21 @@
+SpecTest vfc1:
+{}{} ? True 
+assign
+{}
+{(_i_9924+"1")=i * b=(_b_9714+L) * b=(a+builtin_mult(i,L))
+ * (_b_4697+L)=(a+builtin_mult(_i_9924,L)) * (_b_4697+L)=_b_9714
+ * (@parameter2:+L)=(a+builtin_mult(_i_4907,L)) * (@parameter2:+L)=_b_4697
+ * @parameter2:=a * @parameter2:=(a+builtin_mult("0",L)) * L="10" * M=@parameter1:
+ * !LE(i, M) * !LE("0", @parameter0:) * !LE("0", M) * !LE("0", M)
+ * !LT("0", M)}
+();
+label l;
+assign
+{(_i_4907+"1")=i * (a+builtin_mult("0",L))=@parameter2: * (a+builtin_mult("0",L))=a
+ * b=(_b_4697+L) * b=(a+builtin_mult(i,L)) * _b_4697=(@parameter2:+L)
+ * _b_4697=(a+builtin_mult(_i_4907,L)) * L="10" * M=@parameter1: * !LE(i, M)
+ * !LE("0", @parameter0:) * !LE("0", M) * !LE("0", M)
+ * !LT("0", M)}
+{}
+();
+end;
