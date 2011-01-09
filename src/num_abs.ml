@@ -14,7 +14,7 @@ open Mpqf;;
 let manager = Polka.manager_alloc_strict();;  
 
 
-(* Store non-arithmetic terms as variables indexed by their string reps.
+(* Store variables indexed by their string reps.
    Store also Psyntax rep so that terms can be reconstructed back. *)
 type var_arg_hashtbl = (string, Var.t * args) Hashtbl.t;;
 
@@ -74,8 +74,8 @@ let rec create_vars_from_args (arg : args) : unit =
 (* Steps into formula in order to create variables from non-arithmetic terms *)
 let create_vars_from_pform_at (pf_at : pform_at) : unit =
   match pf_at with 
-  | P_EQ (a1,a2)
-  | P_NEQ (a1,a2)
+  | P_EQ (a1, a2)
+  | P_NEQ (a1, a2)
   | P_PPred ("GT", [a1; a2])
   | P_PPred ("GT", [Arg_op ("tuple", [a1; a2])])
   | P_PPred ("LT", [a1; a2])
@@ -93,17 +93,17 @@ let rec tr_args (arg : args) : Texpr1.expr =
   let mk_binop op e1 e2 =
     Texpr1.Binop (op, e1, e2, Texpr1.Real, Texpr1.Near) in
   match arg with
+  | Arg_var _ -> Texpr1.Var (get_var arg)
+  | Arg_op ("numeric_const", [Arg_string (s)]) 
+  | Arg_string s ->
+    if is_integer_const s then Texpr1.Cst (Coeff.s_of_int (int_of_string s))
+    else (Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false)
   | Arg_op ("builtin_plus", [a1; a2]) -> 
     mk_binop Texpr1.Add (tr_args a1) (tr_args a2)
   | Arg_op ("builtin_minus", [a1; a2]) -> 
     mk_binop Texpr1.Sub (tr_args a1) (tr_args a2)
   | Arg_op ("builtin_mult", [a1; a2]) -> 
     mk_binop Texpr1.Mul (tr_args a1) (tr_args a2)
-  | Arg_op ("numeric_const", [Arg_string (s)]) 
-  | Arg_string s ->
-    if is_integer_const s then Texpr1.Cst (Coeff.s_of_int (int_of_string s))
-    else Texpr1.Var (get_var arg)
-  | Arg_var _ | Arg_op (_,_) -> Texpr1.Var (get_var arg)
   | _ -> Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false
 
 
@@ -242,12 +242,58 @@ let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
       mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) rhs
 
 
-(* Filters numerical formulae *)
-let match_numerical (pf_at : pform_at) : bool =
+(* Determines whether given term contains only numerical subterms *)
+let rec is_numerical_args (arg : args) : bool =
+  match arg with
+  | Arg_var _ -> true
+  | Arg_op ("numeric_const", [Arg_string (s)])
+  | Arg_string s ->
+    if is_integer_const s then true else false
+  | Arg_op ("builtin_plus", [a1; a2])
+  | Arg_op ("builtin_minus", [a1; a2])
+  | Arg_op ("builtin_mult", [a1; a2]) -> 
+    (is_numerical_args a1) && (is_numerical_args a2)
+  | Arg_op (_,_) -> false
+  | _ -> Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false
+
+
+(* Determines whether given formula is numerical *)
+let is_numerical_pf_at (pf_at : pform_at) : bool =
   match pf_at with 
-  | P_EQ (_,_) | P_NEQ(_,_) 
-  | P_PPred("GT",_) | P_PPred("LT",_) | P_PPred("GE",_) | P_PPred("LE",_) -> true 
+  | P_EQ (a1, a2)
+(*  | P_NEQ (a1, a2) *)
+  | P_PPred ("GT", [a1; a2]) | P_PPred ("GT", [Arg_op ("tuple",[a1; a2])])
+  | P_PPred ("LT", [a1; a2]) | P_PPred ("LT", [Arg_op ("tuple",[a1; a2])])
+  | P_PPred ("GE", [a1; a2]) | P_PPred ("GE", [Arg_op ("tuple",[a1; a2])])
+  | P_PPred ("LE", [a1; a2]) | P_PPred ("LE", [Arg_op ("tuple",[a1; a2])]) ->
+    (is_numerical_args a1) && (is_numerical_args a2)
   | _ -> false
+
+
+(* Determines whether given formula represents an equality setting var to a constant *)
+let is_eq_var_const (pf_at : pform_at) : bool =
+  match pf_at with
+  | P_EQ (Arg_var _, Arg_string _)
+  | P_EQ (Arg_var _, Arg_op ("numeric_const", [Arg_string (_)]))
+  | P_EQ (Arg_string _, Arg_var _)
+  | P_EQ (Arg_op ("numeric_const", [Arg_string (_)]), Arg_var _) -> true
+  | _ -> false
+
+
+(* Adds to a substitution varible set to a constant *)
+let subst_eq_var_const (vs : variable_subst) (pf_at : pform_at) : variable_subst =
+  let var,term =
+    match pf_at with
+    | P_EQ (a1, a2) ->
+      (match a1, a2 with
+      | Arg_var v, Arg_string _
+      | Arg_var v, Arg_op ("numeric_const", [Arg_string (_)]) -> v, a2
+      | Arg_string _, Arg_var v
+      | Arg_op ("numeric_const", [Arg_string (_)]), Arg_var v -> v, a1
+      | _ -> assert false)  
+    | _ -> assert false  
+  in 
+  add_subst var term vs
 
 
 (* Abstracts each disjunction separately -- steps into top-level disjunctions only *)
@@ -273,9 +319,15 @@ let rec abs_pform (f : pform) : pform =
     [P_Or (abs_pform f1, abs_pform f2)]
 
   | _ -> 
-    (* Split numerical formulae from the rest *)
-
-    let (num_forms, rest) = List.partition (fun pf_at -> match_numerical pf_at) f in
+    (* Split numerical formulae with equalities from the rest *)
+    let (num_forms_eq, rest) = List.partition (fun pf_at -> is_numerical_pf_at pf_at) f in
+    (* Separate equalities setting var to a constant from numerical formulae *)
+    let (eqs, num_forms) = List.partition (fun pf_at -> is_eq_var_const pf_at) num_forms_eq in
+    (* Create and apply a substitution for constant propagation *)
+    let subst = List.fold_left (fun vs pf_at -> subst_eq_var_const vs pf_at) empty_subst eqs in
+    let num_forms = subst_form subst num_forms in
+    if Config.symb_debug() then
+      Format.printf "\nNumerical formulae: %a@.\n%!" string_form num_forms;
 
     Hashtbl.clear var_arg_table;
     (* Create Apron variables *)
@@ -296,7 +348,7 @@ let rec abs_pform (f : pform) : pform =
 
     (* Perform the abstraction on the conjunction of the constraints *)
     let abs = Abstract1.of_tcons_array manager env tab in
-    Abstract1.minimize_environment manager abs;
+    (*let abs = Abstract1.minimize_environment manager abs in*)
     if Config.symb_debug() then
       Format.printf "\nAbstracted constraints: %a@.\n%!" Abstract1.print abs;    
     
@@ -323,7 +375,7 @@ let rec abs_pform (f : pform) : pform =
     let abs_num_forms = List.map (fun i -> tr_lincons env (Lincons1.array_get tab i)) tab_indices in
 
     (* Unite abstracted formulae with the remainder *)
-    abs_num_forms @ rest
+    abs_num_forms @ eqs @ rest
 
 
 let num_abs (f : pform) : pform =
