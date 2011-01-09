@@ -129,15 +129,27 @@ let tr_pform_at (env : Environment.t) (pf_at : pform_at) : Tcons1.t =
   | _ -> Format.printf "\nFailed on: %a@.\n%!" string_form_at pf_at; assert false
 
 
+let coeff_to_string (coeff : Coeff.t) : string =
+  match coeff with
+  | Coeff.Scalar s -> Scalar.to_string s
+  | Coeff.Interval i -> assert false
+
+let coeff_sgn (coeff : Coeff.t) : int =
+  match coeff with
+  | Coeff.Scalar s -> Scalar.sgn s
+  | Coeff.Interval i -> assert false
+
+let coeff_cmp (coeff : Coeff.t) (num : int) : int =
+  match coeff with
+  | Coeff.Scalar s -> Scalar.cmp s (Scalar.of_int num)
+  | Coeff.Interval i -> assert false
+
+
 (* Translates Apron tree expression of level 1 to term *)
 let rec tr_texpr (texpr : Texpr1.expr) : args =
   match texpr with
-  | Texpr1.Cst coeff -> 
-    (match coeff with
-    | Coeff.Scalar s -> Arg_string (Scalar.to_string s)
-    | Coeff.Interval i -> assert false;)
-  | Texpr1.Var var -> 
-    get_arg (Var.to_string var)
+  | Texpr1.Cst coeff -> Arg_string (coeff_to_string coeff)
+  | Texpr1.Var var -> get_arg (Var.to_string var)
   | Texpr1.Binop (op, te1, te2, typ, _) ->
     let op_name =
       match op with
@@ -150,7 +162,7 @@ let rec tr_texpr (texpr : Texpr1.expr) : args =
 
 
 (* Translates Apron tree constraint of level 1 to formula *)
-let tr_tcons (tcons : Tcons1.t) =
+let tr_tcons (tcons : Tcons1.t) : pform_at =
   let zero = Arg_string "0" in
   let te = Texpr1.to_expr (Tcons1.get_texpr1 tcons) in
   let e1,e2 = 
@@ -163,7 +175,71 @@ let tr_tcons (tcons : Tcons1.t) =
   | Tcons1.DISEQ -> P_NEQ (e1, e2)
   | Tcons1.SUP -> P_PPred ("LT", [e2; e1])
   | Tcons1.SUPEQ -> P_PPred ("LE", [e2; e1])
-  | _ -> assert false
+  | _ -> assert false (* no EQMOD *)
+
+
+(* Translates a (coeff, var) list to term *)
+let rec tr_coeff_vars (cvs : (Coeff.t * Var.t) list) : args option =
+  match cvs with
+  | [] -> None
+  | (coeff, var) :: rest ->
+    let var_arg = get_arg (Var.to_string var) in
+    let arg = if (coeff_cmp coeff 1) = 0 then var_arg
+      else Arg_op ("builtin_mult", [Arg_string (coeff_to_string coeff); var_arg]) in
+    match tr_coeff_vars rest with
+    | None -> Some arg
+    | Some r_arg -> Some (Arg_op ("builtin_plus", [arg; r_arg]))
+    
+
+(* Translates Apron linear expression of level 1 to a pair of terms corresponding to 
+   the left and the right hand side *)
+let rec tr_linexpr (env : Environment.t) (linexpr : Linexpr1.t) : args option * args option =
+  let vars,_ = Environment.vars env in (* TODO: use both integer and real vars *)
+  let coeffs = Array.map (fun var -> Linexpr1.get_coeff linexpr var) vars in
+  let cvs = ref [] in
+  Array.iteri (fun i coeff ->
+    if (Coeff.is_zero coeff) = false then cvs := !cvs @ [(coeff, vars.(i))]) coeffs;
+  let pos,neg = List.partition (fun (c,_) -> coeff_sgn c > 0) !cvs in
+  let neg = List.map (fun (c,v) -> (Coeff.neg c,v)) neg in
+  tr_coeff_vars pos, tr_coeff_vars neg
+
+
+(* Translates Apron linear constraint of level 1 to formula *)
+let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
+  let zero = Arg_string "0" in
+  let cst = Lincons1.get_cst lincons in
+  let mk_const cst = Arg_string (coeff_to_string cst) in
+  let mk_pred e1 e2 =
+    match Lincons1.get_typ lincons with
+    | Lincons1.EQ -> P_EQ (e1, e2)
+    | Lincons1.DISEQ -> P_NEQ (e1, e2)
+    | Lincons1.SUP -> P_PPred ("LT", [e2; e1])
+    | Lincons1.SUPEQ -> P_PPred ("LE", [e2; e1])
+    | _ -> assert false (* no EQMOD *)
+  in
+  match tr_linexpr env (Lincons1.get_linexpr1 lincons) with
+  | None, None -> 
+    if (Coeff.is_zero cst) then 
+      P_Garbage 
+    else 
+      P_False
+  | None, Some rhs ->
+    if (coeff_sgn cst) < 0 then 
+      mk_pred zero (Arg_op ("builtin_plus", [mk_const (Coeff.neg cst); rhs]))
+    else 
+      mk_pred (mk_const cst) rhs
+  | Some lhs, None ->
+    if (coeff_sgn cst) <= 0 then 
+      mk_pred lhs (mk_const (Coeff.neg cst)) 
+    else 
+      mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) zero
+  | Some lhs, Some rhs ->
+    if (coeff_sgn cst) = 0 then
+      mk_pred lhs rhs
+    else if (coeff_sgn cst) < 0 then 
+      mk_pred lhs (Arg_op ("builtin_plus", [mk_const (Coeff.neg cst); rhs]))
+    else
+      mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) rhs
 
 
 (* Filters numerical formulae *)
@@ -192,10 +268,6 @@ let rec abs_pform (f : pform) : pform =
     in
     range2 0 []    
   in
-  (* Hack *)
-  let array_print fmt x = 
-    Tcons1.array_print fmt x
-  in
   match f with
   | [P_Or (f1, f2)] -> 
     [P_Or (abs_pform f1, abs_pform f2)]
@@ -219,7 +291,8 @@ let rec abs_pform (f : pform) : pform =
     (* Fill the array with translated numerical formulae *)
     list_iteri (fun i pf_at -> Tcons1.array_set tab i (tr_pform_at env pf_at)) num_forms;
     if Config.symb_debug() then
-      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;
+      (let array_print fmt x = Tcons1.array_print fmt x in
+      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
 
     (* Perform the abstraction on the conjunction of the constraints *)
     let abs = Abstract1.of_tcons_array manager env tab in
@@ -227,19 +300,27 @@ let rec abs_pform (f : pform) : pform =
     if Config.symb_debug() then
       Format.printf "\nAbstracted constraints: %a@.\n%!" Abstract1.print abs;    
     
-    (* Convert the abstract value back to conjunction of constraints *)
-    let tab2 = Abstract1.to_lincons_array manager abs in
-    if Config.symb_debug() then
-      (let lincons1_array_print fmt x =
-  Lincons1.array_print fmt x in
-      Format.printf "\nArray constraints: %a@.\n%!" lincons1_array_print tab2;);
+    (*
+    (* Convert the abstract value back to conjunction of tree expressions constraints *)
     let tab = Abstract1.to_tcons_array manager abs in
     if Config.symb_debug() then
-      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;
+      (let array_print fmt x = Tcons1.array_print fmt x in
+      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
 
     (* Translate abstracted constraints back to Psyntax formulae *)
     let tab_indices = range (Tcons1.array_length tab) in
     let abs_num_forms = List.map (fun i -> tr_tcons (Tcons1.array_get tab i)) tab_indices in
+    *)
+    
+    (* Convert the abstract value back to conjunction of linear constraints *)
+    let tab = Abstract1.to_lincons_array manager abs in
+    if Config.symb_debug() then
+      (let array_print fmt x = Lincons1.array_print fmt x in
+      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
+
+    (* Translate abstracted constraints back to Psyntax formulae *)
+    let tab_indices = range (Lincons1.array_length tab) in
+    let abs_num_forms = List.map (fun i -> tr_lincons env (Lincons1.array_get tab i)) tab_indices in
 
     (* Unite abstracted formulae with the remainder *)
     abs_num_forms @ rest
