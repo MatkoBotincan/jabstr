@@ -8,10 +8,12 @@
 open Psyntax;;
 open Apron;;
 open Mpqf;;
+open Plugin;;
 
 
 (* Create a manager for Convex Polyhedra and Linear Equalities abstract domain *)
-let manager = Polka.manager_alloc_strict();;  
+let manager = Polka.manager_alloc_strict();;
+type abs_type = Polka.strict Polka.t;;
 
 
 (* Store variables indexed by their string reps.
@@ -242,34 +244,6 @@ let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
       mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) rhs
 
 
-(* Determines whether given term contains only numerical subterms *)
-let rec is_numerical_args (arg : args) : bool =
-  match arg with
-  | Arg_var _ -> true
-  | Arg_op ("numeric_const", [Arg_string (s)])
-  | Arg_string s ->
-    if is_integer_const s then true else false
-  | Arg_op ("builtin_plus", [a1; a2])
-  | Arg_op ("builtin_minus", [a1; a2])
-  | Arg_op ("builtin_mult", [a1; a2]) -> 
-    (is_numerical_args a1) && (is_numerical_args a2)
-  | Arg_op (_,_) -> false
-  | _ -> Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false
-
-
-(* Determines whether given formula is numerical *)
-let is_numerical_pf_at (pf_at : pform_at) : bool =
-  match pf_at with 
-  | P_EQ (a1, a2)
-(*  | P_NEQ (a1, a2) *)
-  | P_PPred ("GT", [a1; a2]) | P_PPred ("GT", [Arg_op ("tuple",[a1; a2])])
-  | P_PPred ("LT", [a1; a2]) | P_PPred ("LT", [Arg_op ("tuple",[a1; a2])])
-  | P_PPred ("GE", [a1; a2]) | P_PPred ("GE", [Arg_op ("tuple",[a1; a2])])
-  | P_PPred ("LE", [a1; a2]) | P_PPred ("LE", [Arg_op ("tuple",[a1; a2])]) ->
-    (is_numerical_args a1) && (is_numerical_args a2)
-  | _ -> false
-
-
 (* Determines whether given formula represents an equality setting var to a constant *)
 let is_eq_var_const (pf_at : pform_at) : bool =
   match pf_at with
@@ -296,8 +270,9 @@ let subst_eq_var_const (vs : variable_subst) (pf_at : pform_at) : variable_subst
   add_subst var term vs
 
 
-(* Abstracts each disjunction separately -- steps into top-level disjunctions only *)
-let rec abs_pform (f : pform) : pform =
+(* Converts numerical part of the formula to Apron abstract value of level 1 leaving the remainder.
+   Assumes there are no disjunctions in the formula. *)
+let pform_to_abstract_val (f : pform) : abs_type Abstract1.t * pform =
   (* Analogue of Array.iteri for lists *)
   let list_iteri (f : int -> 'a -> unit) (ls : 'a list) : unit =
     let rec iteri2 f n = function
@@ -306,6 +281,48 @@ let rec abs_pform (f : pform) : pform =
     in
     iteri2 f 0 ls
   in
+  if Config.symb_debug() then
+    Format.printf "\nFormula before abstraction: %a@.\n%!" string_form f;
+  (* Split numerical formulae with equalities from the rest *)
+  let (num_forms_eq, rest) = List.partition (fun pf_at -> is_numerical_pform_at pf_at) f in
+  (* Separate equalities setting var to a constant from numerical formulae *)
+  let (eqs, num_forms) = List.partition (fun pf_at -> is_eq_var_const pf_at) num_forms_eq in
+  (* Create and apply a substitution for constant propagation *)
+  let subst = List.fold_left (fun vs pf_at -> subst_eq_var_const vs pf_at) empty_subst eqs in
+  let num_forms = subst_form subst num_forms in
+  if Config.symb_debug() then
+    Format.printf "\nNumerical subformula: %a@.\n%!" string_form num_forms;
+
+  Hashtbl.clear var_arg_table;
+  (* Create Apron variables *)
+  List.iter create_vars_from_pform_at num_forms;
+
+  (* Create environment with all integer variables *)
+  let env = Environment.make (get_vars()) [||] in
+  if Config.symb_debug() then
+    Format.printf "\nEnvironment: %a@.\n%!" (fun x -> Environment.print x) env;
+
+  (* Create array of Apron tree expressions constraints *)
+  let tab = Tcons1.array_make env (List.length num_forms) in
+  (* Fill the array with translated numerical formulae *)
+  list_iteri (fun i pf_at -> Tcons1.array_set tab i (tr_pform_at env pf_at)) num_forms;
+  if Config.symb_debug() then
+    (let array_print fmt x = Tcons1.array_print fmt x in
+    Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
+
+  (* Perform the abstraction on the conjunction of the constraints *)
+  let abs = Abstract1.of_tcons_array manager env tab in
+  (*let abs = Abstract1.minimize_environment manager abs in*)
+  if Config.symb_debug() then
+    Format.printf "\nAbstracted constraints: %a@.\n%!" Abstract1.print abs;
+  
+  (* Return the abstract value and the remaining part of the formula *)
+  (abs, eqs @ rest)
+
+
+(* Converts formula to Apron abstract value of level 1.
+   Assumes there are no disjunctions in the formula. *)
+let abstract_val_to_pform (abs : 'a Abstract1.t) : pform =
   (* Generates a list of numbers [0; ...,; n-1] *)
   let range n =
     let rec range2 i ls =
@@ -314,79 +331,70 @@ let rec abs_pform (f : pform) : pform =
     in
     range2 0 []    
   in
+  (*
+  (* Convert the abstract value back to conjunction of tree expressions constraints *)
+  let tab = Abstract1.to_tcons_array manager abs in
+  if Config.symb_debug() then
+    (let array_print fmt x = Tcons1.array_print fmt x in
+    Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
+
+  (* Translate abstracted constraints back to Psyntax formulae *)
+  let tab_indices = range (Tcons1.array_length tab) in
+  let abs_num_forms = List.map (fun i -> tr_tcons (Tcons1.array_get tab i)) tab_indices in
+  *)
+  (* Convert the abstract value back to conjunction of linear constraints *)
+  let env = Abstract1.env abs in
+  let tab = Abstract1.to_lincons_array manager abs in
+  if Config.symb_debug() then
+    (let array_print fmt x = Lincons1.array_print fmt x in
+    Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
+
+  (* Translate abstracted constraints back to Psyntax formulae *)
+  let tab_indices = range (Lincons1.array_length tab) in
+  let abs_pform = List.map (fun i -> tr_lincons env (Lincons1.array_get tab i)) tab_indices in
+  if Config.symb_debug() then
+    Format.printf "\nAfter numerical abstraction: %a@.\n%!" string_form abs_pform;
+  abs_pform
+
+
+(* Returns abstract value of a formula.
+   Abstracts each disjunction separately -- steps into top-level disjunctions only. *)
+let rec abstract_val (f : pform) : pform =
+  let abstract_val2 (f : pform) : pform =
+    let (abs,rem) = pform_to_abstract_val f in
+    (abstract_val_to_pform abs) @ rem
+  in
   match f with
   | [P_Or (f1, f2)] -> 
-    [P_Or (abs_pform f1, abs_pform f2)]
-
-  | _ -> 
-    (* Split numerical formulae with equalities from the rest *)
-    let (num_forms_eq, rest) = List.partition (fun pf_at -> is_numerical_pf_at pf_at) f in
-    (* Separate equalities setting var to a constant from numerical formulae *)
-    let (eqs, num_forms) = List.partition (fun pf_at -> is_eq_var_const pf_at) num_forms_eq in
-    (* Create and apply a substitution for constant propagation *)
-    let subst = List.fold_left (fun vs pf_at -> subst_eq_var_const vs pf_at) empty_subst eqs in
-    let num_forms = subst_form subst num_forms in
-    if Config.symb_debug() then
-      Format.printf "\nNumerical formulae: %a@.\n%!" string_form num_forms;
-
-    Hashtbl.clear var_arg_table;
-    (* Create Apron variables *)
-    List.iter create_vars_from_pform_at num_forms;
-
-    (* Create environment with all integer variables *)
-    let env = Environment.make (get_vars()) [||] in
-    if Config.symb_debug() then
-      Format.printf "\nEnvironment: %a@.\n%!" (fun x -> Environment.print x) env;
-
-    (* Create array of Apron tree expressions constraints *)
-    let tab = Tcons1.array_make env (List.length num_forms) in
-    (* Fill the array with translated numerical formulae *)
-    list_iteri (fun i pf_at -> Tcons1.array_set tab i (tr_pform_at env pf_at)) num_forms;
-    if Config.symb_debug() then
-      (let array_print fmt x = Tcons1.array_print fmt x in
-      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
-
-    (* Perform the abstraction on the conjunction of the constraints *)
-    let abs = Abstract1.of_tcons_array manager env tab in
-    (*let abs = Abstract1.minimize_environment manager abs in*)
-    if Config.symb_debug() then
-      Format.printf "\nAbstracted constraints: %a@.\n%!" Abstract1.print abs;    
-    
-    (*
-    (* Convert the abstract value back to conjunction of tree expressions constraints *)
-    let tab = Abstract1.to_tcons_array manager abs in
-    if Config.symb_debug() then
-      (let array_print fmt x = Tcons1.array_print fmt x in
-      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
-
-    (* Translate abstracted constraints back to Psyntax formulae *)
-    let tab_indices = range (Tcons1.array_length tab) in
-    let abs_num_forms = List.map (fun i -> tr_tcons (Tcons1.array_get tab i)) tab_indices in
-    *)
-    
-    (* Convert the abstract value back to conjunction of linear constraints *)
-    let tab = Abstract1.to_lincons_array manager abs in
-    if Config.symb_debug() then
-      (let array_print fmt x = Lincons1.array_print fmt x in
-      Format.printf "\nArray constraints: %a@.\n%!" array_print tab;);
-
-    (* Translate abstracted constraints back to Psyntax formulae *)
-    let tab_indices = range (Lincons1.array_length tab) in
-    let abs_num_forms = List.map (fun i -> tr_lincons env (Lincons1.array_get tab i)) tab_indices in
-
-    (* Unite abstracted formulae with the remainder *)
-    abs_num_forms @ eqs @ rest
+    [P_Or (abstract_val f1, abstract_val f2)]
+  | _ -> abstract_val2 f
 
 
-let num_abs (f : pform) : pform =
-  if Config.symb_debug() then
-    Format.printf "\nBefore numerical abstraction: %a@.\n%!" string_form f;
-  let abs_f = abs_pform f in
-  if Config.symb_debug() then
-    Format.printf "\nAfter numerical abstraction: %a@.\n%!" string_form abs_f;
-  abs_f
+(* Returns join of two formulae.
+   Assumes there are no disjunctions in the formulae. *)
+let join (f1 : pform) (f2 : pform) : pform =
+  let (abs1,rem1) = pform_to_abstract_val f1 in
+  let (abs2,rem2) = pform_to_abstract_val f2 in
+  let abs = Abstract1.join manager abs1 abs2 in
+  (abstract_val_to_pform abs) @ rem1 @ rem2
 
+
+(* Returns meet of two formulae.
+   Assumes there are no disjunctions in the formulae. *)
+let meet (f1 : pform) (f2 : pform) : pform =
+  let (abs1,rem1) = pform_to_abstract_val f1 in
+  let (abs2,rem2) = pform_to_abstract_val f2 in
+  let abs = Abstract1.meet manager abs1 abs2 in
+  (abstract_val_to_pform abs) @ rem1 @ rem2
+
+  
+let my_abs_int = {
+  abstract_val = Some (ref abstract_val);
+  join = Some (ref join);
+  meet = Some (ref meet);
+  widening = None;
+}
 
 (* Plugin registration *)
 let _ =
-  Plugin_callback.add_abs_int (ref num_abs)
+  Plugin_callback.add_abs_int (ref my_abs_int)
