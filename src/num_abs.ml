@@ -45,11 +45,11 @@ let add_var_arg (arg : args) : unit =
 
 let get_var (arg : args) : Var.t =
   fst (try Hashtbl.find var_arg_table (gen_id arg) with
-    Not_found -> assert false)
+    Not_found -> Format.printf "\nget_var failed on: %s\n%!" (gen_id arg); assert false)
 
 let get_arg (id : string) : args =
   snd (try Hashtbl.find var_arg_table id with
-    Not_found -> assert false)
+    Not_found -> Format.printf "\nget_arg  failed on: %s\n%!" id; assert false)
 
 let get_vars () : Var.t array =
   let var_list = Hashtbl.fold (fun id (var,arg) ls -> ls @ [var]) var_arg_table [] in
@@ -70,7 +70,8 @@ let rec create_vars_from_args (arg : args) : unit =
   | Arg_op ("numeric_const", [Arg_string (s)])
   | Arg_string s -> if is_integer_const s <> true then add_var_arg arg
   | Arg_var _ | Arg_op (_,_) -> add_var_arg arg
-  | _ -> Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false
+  | _ -> Format.printf "\ncreate_vars_from_args failed on: %s\n%!" (gen_id arg); 
+    assert false
 
 
 (* Steps into formula in order to create variables from non-arithmetic terms *)
@@ -87,7 +88,8 @@ let create_vars_from_pform_at (pf_at : pform_at) : unit =
   | P_PPred ("LE", [a1; a2])
   | P_PPred ("LE", [Arg_op ("tuple", [a1; a2])]) ->
     create_vars_from_args a1; create_vars_from_args a2;
-  | _ -> Format.printf "\nFailed on: %a@.\n%!" string_form_at pf_at; assert false
+  | _ -> Format.printf "\ncreate_vars_from_pform_at failed on: %a@.\n%!" string_form_at pf_at; 
+    assert false
 
 
 (* Translates term to Apron tree expression of level 1 *)
@@ -99,14 +101,15 @@ let rec tr_args (arg : args) : Texpr1.expr =
   | Arg_op ("numeric_const", [Arg_string (s)]) 
   | Arg_string s ->
     if is_integer_const s then Texpr1.Cst (Coeff.s_of_int (int_of_string s))
-    else (Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false)
+    else (Format.printf "\ntr_args failed on: %s\n%!" (gen_id arg); assert false)
   | Arg_op ("builtin_plus", [a1; a2]) -> 
     mk_binop Texpr1.Add (tr_args a1) (tr_args a2)
   | Arg_op ("builtin_minus", [a1; a2]) -> 
     mk_binop Texpr1.Sub (tr_args a1) (tr_args a2)
   | Arg_op ("builtin_mult", [a1; a2]) -> 
     mk_binop Texpr1.Mul (tr_args a1) (tr_args a2)
-  | _ -> Format.printf "\nFailed on: %s\n%!" (gen_id arg); assert false
+  | _ -> Format.printf "\ntr_args failed on: %s\n%!" (gen_id arg); 
+    assert false
 
 
 (* Translates formula to Apron tree constraint of level 1 *)
@@ -128,7 +131,8 @@ let tr_pform_at (env : Environment.t) (pf_at : pform_at) : Tcons1.t =
     mk_cons (mk_sub (tr_args a1) (tr_args a2)) Tcons1.SUPEQ
   | P_PPred ("LE", [a1; a2]) | P_PPred ("LE", [Arg_op ("tuple",[a1; a2])]) ->
     mk_cons (mk_sub (tr_args a2) (tr_args a1)) Tcons1.SUPEQ
-  | _ -> Format.printf "\nFailed on: %a@.\n%!" string_form_at pf_at; assert false
+  | _ -> Format.printf "\ntr_pform_at failed on: %a@.\n%!" string_form_at pf_at;
+    assert false
 
 
 let coeff_to_string (coeff : Coeff.t) : string =
@@ -272,7 +276,7 @@ let subst_eq_var_const (vs : variable_subst) (pf_at : pform_at) : variable_subst
 
 (* Converts numerical part of the formula to Apron abstract value of level 1 leaving the remainder.
    Assumes there are no disjunctions in the formula. *)
-let pform_to_abstract_val (f : pform) : abs_type Abstract1.t * pform =
+let pform_to_abstract_val (keep_eqs : bool) (f : pform) : abs_type Abstract1.t * pform =
   (* Analogue of Array.iteri for lists *)
   let list_iteri (f : int -> 'a -> unit) (ls : 'a list) : unit =
     let rec iteri2 f n = function
@@ -282,7 +286,7 @@ let pform_to_abstract_val (f : pform) : abs_type Abstract1.t * pform =
     iteri2 f 0 ls
   in
   if Config.symb_debug() then
-    Format.printf "\nFormula before abstraction: %a@.\n%!" string_form f;
+    Format.printf "\nBefore abstraction: %a@.\n%!" string_form f;
   (* Split numerical formulae with equalities from the rest *)
   let (num_forms_eq, rest) = List.partition (fun pf_at -> is_numerical_pform_at pf_at) f in
   (* Separate equalities setting var to a constant from numerical formulae *)
@@ -290,6 +294,10 @@ let pform_to_abstract_val (f : pform) : abs_type Abstract1.t * pform =
   (* Create and apply a substitution for constant propagation *)
   let subst = List.fold_left (fun vs pf_at -> subst_eq_var_const vs pf_at) empty_subst eqs in
   let num_forms = subst_form subst num_forms in
+  
+  let num_forms,eqs =
+    if keep_eqs then num_forms @ eqs, []
+    else num_forms, eqs in
   if Config.symb_debug() then
     Format.printf "\nNumerical subformula: %a@.\n%!" string_form num_forms;
 
@@ -353,7 +361,7 @@ let abstract_val_to_pform (abs : 'a Abstract1.t) : pform =
   let tab_indices = range (Lincons1.array_length tab) in
   let abs_pform = List.map (fun i -> tr_lincons env (Lincons1.array_get tab i)) tab_indices in
   if Config.symb_debug() then
-    Format.printf "\nAfter numerical abstraction: %a@.\n%!" string_form abs_pform;
+    Format.printf "\nAfter abstraction: %a@.\n%!" string_form abs_pform;
   abs_pform
 
 
@@ -361,7 +369,7 @@ let abstract_val_to_pform (abs : 'a Abstract1.t) : pform =
    Abstracts each disjunction separately -- steps into top-level disjunctions only. *)
 let rec abstract_val (f : pform) : pform =
   let abstract_val2 (f : pform) : pform =
-    let (abs,rem) = pform_to_abstract_val f in
+    let (abs,rem) = pform_to_abstract_val false f in
     (abstract_val_to_pform abs) @ rem
   in
   match f with
@@ -373,19 +381,39 @@ let rec abstract_val (f : pform) : pform =
 (* Returns join of two formulae.
    Assumes there are no disjunctions in the formulae. *)
 let join (f1 : pform) (f2 : pform) : pform =
-  let (abs1,rem1) = pform_to_abstract_val f1 in
-  let (abs2,rem2) = pform_to_abstract_val f2 in
+  if Config.symb_debug() then
+    Format.printf "\nStarting join of:\n%a@.\nand:\n%a@.\n%!" string_form f1 string_form f2;
+  let (abs1,rem1) = pform_to_abstract_val true f1 in
+  let (abs2,rem2) = pform_to_abstract_val true f2 in
+  let env = Environment.lce (Abstract1.env abs1) (Abstract1.env abs2) in
+  Abstract1.change_environment_with manager abs1 env false;
+  Abstract1.change_environment_with manager abs2 env false;
   let abs = Abstract1.join manager abs1 abs2 in
-  (abstract_val_to_pform abs) @ rem1 @ rem2
+  if Config.symb_debug() then
+    Format.printf "\nAbstracted constraints after join: %a@.\n%!" Abstract1.print abs;
+  let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
+  if Config.symb_debug() then
+    Format.printf "\nWhole formula after join: %a@.\n%!" string_form pform;
+  pform
 
 
 (* Returns meet of two formulae.
    Assumes there are no disjunctions in the formulae. *)
 let meet (f1 : pform) (f2 : pform) : pform =
-  let (abs1,rem1) = pform_to_abstract_val f1 in
-  let (abs2,rem2) = pform_to_abstract_val f2 in
+  if Config.symb_debug() then
+    Format.printf "\nStarting meet of:\n%a@.\nand:\n%a@.\n%!" string_form f1 string_form f2;
+  let (abs1,rem1) = pform_to_abstract_val true f1 in
+  let (abs2,rem2) = pform_to_abstract_val true f2 in
+  let env = Environment.lce (Abstract1.env abs1) (Abstract1.env abs2) in
+  Abstract1.change_environment_with manager abs1 env false;
+  Abstract1.change_environment_with manager abs2 env false;
   let abs = Abstract1.meet manager abs1 abs2 in
-  (abstract_val_to_pform abs) @ rem1 @ rem2
+  if Config.symb_debug() then
+    Format.printf "\nAbstracted constraints after meet: %a@.\n%!" Abstract1.print abs;
+  let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
+  if Config.symb_debug() then
+    Format.printf "\nWhole formula after meet: %a@.\n%!" string_form pform;
+  pform
 
   
 let my_abs_int = {
