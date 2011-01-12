@@ -389,6 +389,7 @@ let join (f1 : pform) (f2 : pform) : pform =
   Abstract1.change_environment_with manager abs1 env false;
   Abstract1.change_environment_with manager abs2 env false;
   let abs = Abstract1.join manager abs1 abs2 in
+  Abstract1.minimize_environment_with manager abs;
   if Config.symb_debug() then
     Format.printf "\nAbstracted constraints after join: %a@.\n%!" Abstract1.print abs;
   let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
@@ -408,6 +409,7 @@ let meet (f1 : pform) (f2 : pform) : pform =
   Abstract1.change_environment_with manager abs1 env false;
   Abstract1.change_environment_with manager abs2 env false;
   let abs = Abstract1.meet manager abs1 abs2 in
+  Abstract1.minimize_environment_with manager abs;
   if Config.symb_debug() then
     Format.printf "\nAbstracted constraints after meet: %a@.\n%!" Abstract1.print abs;
   let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
@@ -415,7 +417,7 @@ let meet (f1 : pform) (f2 : pform) : pform =
     Format.printf "\nWhole formula after meet: %a@.\n%!" string_form pform;
   pform
 
-  
+
 let my_abs_int = {
   abstract_val = Some (ref abstract_val);
   join = Some (ref join);
