@@ -378,6 +378,83 @@ let rec abstract_val (f : pform) : pform =
   | _ -> abstract_val2 f
 
 
+(* Determines whether two terms are equal modulo constants *)
+let rec args_eq_mod_const (arg1 : args) (arg2 : args) : bool =
+  match arg1, arg2 with
+  | Arg_var _, Arg_var _ -> 
+    Format.fprintf formatter "%a%!" string_args arg1;
+    let s1 = dump_buffer_contents buffer in
+    Format.fprintf formatter "%a%!" string_args arg2;
+    let s2 = dump_buffer_contents buffer in
+    (String.compare s1 s2) = 0
+  | Arg_op ("numeric_const", [Arg_string _]), Arg_op ("numeric_const", [Arg_string _])
+  | Arg_string _, Arg_string _ -> true
+  | Arg_op ("builtin_plus", [a1; a2]), Arg_op ("builtin_plus", [b1; b2])
+  | Arg_op ("builtin_minus", [a1; a2]), Arg_op ("builtin_minus", [b1; b2])
+  | Arg_op ("builtin_mult", [a1; a2]), Arg_op ("builtin_mult", [b1; b2]) -> 
+    (args_eq_mod_const a1 b1) && (args_eq_mod_const a2 b2)
+  | _ -> false
+
+
+(* Determines whether two formulae are equal modulo constants *)
+let pform_at_eq_mod_const (f1 : pform_at) (f2 : pform_at) : bool =
+  match f1, f2 with 
+  | P_EQ (a1, a2), P_EQ (b1, b2)
+  | P_NEQ (a1, a2), P_NEQ (b1, b2)
+  | P_PPred ("GT", [a1; a2]), P_PPred ("GT", [b1; b2]) 
+  | P_PPred ("GT", [Arg_op ("tuple",[a1; a2])]), P_PPred ("GT", [Arg_op ("tuple",[b1; b2])])
+  | P_PPred ("LT", [a1; a2]), P_PPred ("LT", [b1; b2]) 
+  | P_PPred ("LT", [Arg_op ("tuple",[a1; a2])]), P_PPred ("LT", [Arg_op ("tuple",[b1; b2])])
+  | P_PPred ("GE", [a1; a2]), P_PPred ("GE", [b1; b2]) 
+  | P_PPred ("GE", [Arg_op ("tuple",[a1; a2])]), P_PPred ("GE", [Arg_op ("tuple",[b1; b2])])
+  | P_PPred ("LE", [a1; a2]), P_PPred ("LE", [b1; b2]) 
+  | P_PPred ("LE", [Arg_op ("tuple",[a1; a2])]), P_PPred ("LE", [Arg_op ("tuple",[b1; b2])]) ->
+    (args_eq_mod_const a1 b1) && (args_eq_mod_const a2 b2)
+  | _ -> false
+
+
+(* Determines whether two formulae are syntactically equal *)
+let pform_at_eq (f1 : pform_at) (f2 : pform_at) : bool =
+  Format.fprintf formatter "%a%!" string_form_at f1;
+  let s1 = dump_buffer_contents buffer in
+  Format.fprintf formatter "%a%!" string_form_at f2;
+  let s2 = dump_buffer_contents buffer in
+  (String.compare s1 s2) = 0
+
+
+(* Peforms syntactic forgetting (existential quantification) on those terms of join
+   that did changed only modulo constant wrt to either f1 or f2. *)
+let syntactic_forget (f1 : pform) (f2 : pform) (join : pform) : pform =
+  let rec filter_equal eq_pred (fs : pform_at list) (gs : pform_at list) =
+    match fs with
+    | [] -> (([],gs),[])
+    | f :: fs ->
+      let fs_eq,fs_neq = List.partition (fun g -> eq_pred f g) fs in
+      let gs_eq,gs_neq = List.partition (fun g -> eq_pred f g) gs in
+      let (fs_neq,gs_neq),common_eq = filter_equal eq_pred fs_neq gs_neq in
+      if gs_eq = [] then
+        (([f] @ fs_neq, gs_neq), common_eq)
+      else
+        ((fs_neq, gs_neq), gs_eq @ common_eq)
+  in
+  let (join_neq1,f1_neq),common_eq1 = 
+    filter_equal pform_at_eq join f1 in
+  let (join_neq1,f1_neq),common_eq_mod_const1 = 
+    filter_equal pform_at_eq_mod_const join_neq1 f1_neq in
+  let (join_neq2,f2_neq),common_eq2 = 
+    filter_equal pform_at_eq join f2 in
+  let (join_neq2,f2_neq),common_eq_mod_const2 = 
+    filter_equal pform_at_eq_mod_const join_neq2 f2_neq in
+  if (List.length common_eq1) > (List.length common_eq2) then
+    common_eq1 @ join_neq1
+  else if (List.length common_eq1) < (List.length common_eq2) then
+    common_eq2 @ join_neq2
+  else if (List.length common_eq_mod_const1) >= (List.length common_eq_mod_const2) then
+    common_eq1 @ join_neq1
+  else
+    common_eq2 @ join_neq2
+
+
 (* Returns join of two formulae.
    Assumes there are no disjunctions in the formulae. *)
 let join (f1 : pform) (f2 : pform) : pform =
@@ -394,7 +471,9 @@ let join (f1 : pform) (f2 : pform) : pform =
     Format.printf "\nAbstracted constraints after join: %a@.\n%!" Abstract1.print abs;
   let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
   if Config.symb_debug() then
-    Format.printf "\nWhole formula after join: %a@.\n%!" string_form pform;
+    Format.printf "\nFormula after join: %a@.\n%!" string_form pform;
+  let pform = syntactic_forget f1 f2 pform in
+    Format.printf "\nJoin formula after syntactic forget: %a@.\n%!" string_form pform;
   pform
 
 

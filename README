@@ -1,2 +1,7 @@
 jabstr - jStar plugin for numerical abstractions
 Copyright (C) 2010, 2011  Matko Botincan
+
+Notes:
+- If you make any changes to the sources jabstr depends on, you have to
+  compile jabstr again, otherwise (nat)dynlink will trigger the error 
+  "implementation mismatch on ..." and raise exception.
