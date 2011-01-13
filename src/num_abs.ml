@@ -423,7 +423,7 @@ let pform_at_eq (f1 : pform_at) (f2 : pform_at) : bool =
 
 
 (* Peforms syntactic forgetting (existential quantification) on those terms of join
-   that did changed only modulo constant wrt to either f1 or f2. *)
+   that have changed only modulo constant wrt to either f1 or f2. *)
 let syntactic_forget (f1 : pform) (f2 : pform) (join : pform) : pform =
   let rec filter_equal eq_pred (fs : pform_at list) (gs : pform_at list) =
     match fs with
@@ -473,6 +473,7 @@ let join (f1 : pform) (f2 : pform) : pform =
   if Config.symb_debug() then
     Format.printf "\nFormula after join: %a@.\n%!" string_form pform;
   let pform = syntactic_forget f1 f2 pform in
+  if Config.symb_debug() then
     Format.printf "\nJoin formula after syntactic forget: %a@.\n%!" string_form pform;
   pform
 
