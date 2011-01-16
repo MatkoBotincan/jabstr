@@ -424,7 +424,7 @@ let pform_at_eq (f1 : pform_at) (f2 : pform_at) : bool =
 
 (* Peforms syntactic forgetting (existential quantification) on those terms of join
    that have changed only modulo constant wrt to either f1 or f2. *)
-let syntactic_forget (f1 : pform) (f2 : pform) (join : pform) : pform =
+let syntactic_forget_mod_const (f1 : pform) (f2 : pform) (join : pform) : pform =
   let rec filter_equal eq_pred (fs : pform_at list) (gs : pform_at list) =
     match fs with
     | [] -> (([],gs),[])
@@ -455,24 +455,90 @@ let syntactic_forget (f1 : pform) (f2 : pform) (join : pform) : pform =
     common_eq2 @ join_neq2
 
 
+(* Calculates size of the formula *)
+let rec pform_size (f : pform) : int =
+  let rec args_size (arg : args) : int =
+    match arg with 
+    | Arg_var _ | Arg_string _ -> 1
+    | Arg_op (_,args) ->  List.fold_left (fun s a -> s + (args_size a)) 0 args
+    | _ -> assert false
+  in
+  let rec pform_at_size (pf_at : pform_at) : int =
+    match pf_at with 
+    | P_EQ (a1,a2) | P_NEQ (a1,a2) -> 
+      (args_size a1) + (args_size a2)
+    | P_PPred(_,args) | P_SPred(_,args) -> 
+      List.fold_left (fun s a -> s + (args_size a)) 0 args
+    | P_Or (f1,f2) | P_Wand (f1,f2) | P_Septract (f1,f2) -> 
+      (pform_size f1) + (pform_size f2)
+    | P_Garbage -> 1
+    | P_False -> 1
+  in
+  List.fold_left (fun s pa -> s + (pform_at_size pa)) 0 f
+
+
+(* Removes inequalities inolving an existential var from a formula *)
+let remove_ineqs_with_exists (f : pform) : pform =
+  let have_single_evar (a1 : args) (a2 : args) =
+    match a1, a2 with
+    | Arg_var (Vars.EVar _), Arg_var (Vars.EVar _) -> false
+    | Arg_var (Vars.EVar _), _ -> true
+    | _, Arg_var (Vars.EVar _) -> true
+    | _ -> false
+  in
+  let is_ineq_with_exists (pf_at : pform_at) : bool =
+    match pf_at with 
+    | P_PPred ("GT", [a1; a2]) | P_PPred ("GT", [Arg_op ("tuple",[a1; a2])])
+    | P_PPred ("LT", [a1; a2]) | P_PPred ("LT", [Arg_op ("tuple",[a1; a2])])
+    | P_PPred ("GE", [a1; a2]) | P_PPred ("GE", [Arg_op ("tuple",[a1; a2])])
+    | P_PPred ("LE", [a1; a2]) | P_PPred ("LE", [Arg_op ("tuple",[a1; a2])]) ->
+      have_single_evar a1 a2
+    | _ -> false
+  in
+  List.filter (fun pa -> is_ineq_with_exists pa = false) f
+
+
+let remove_additional_ineqs (f : pform) : pform =
+  let remove_ineq (pf_at : pform_at) : bool =
+    match pf_at with 
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_string _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"data_new")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_new")); _]) -> true
+    | _ -> false
+  in
+  List.filter (fun pa -> remove_ineq pa = false) f
+
+
 (* Returns join of two formulae.
    Assumes there are no disjunctions in the formulae. *)
 let join (f1 : pform) (f2 : pform) : pform =
   if Config.symb_debug() then
     Format.printf "\nStarting join of:\n%a@.\nand:\n%a@.\n%!" string_form f1 string_form f2;
+  (*
+  let f1, f2 =
+    if (pform_size f1) > (pform_size f2) then
+      remove_ineqs_with_exists f1, f2
+    else
+      f1, remove_ineqs_with_exists f2
+  in
+  if Config.symb_debug() then
+    Format.printf "\nAfter removing inequalities with exists:\n%a@.\nand:\n%a@.\n%!" string_form f1 string_form f2;
+  *)
   let (abs1,rem1) = pform_to_abstract_val true f1 in
   let (abs2,rem2) = pform_to_abstract_val true f2 in
   let env = Environment.lce (Abstract1.env abs1) (Abstract1.env abs2) in
   Abstract1.change_environment_with manager abs1 env false;
   Abstract1.change_environment_with manager abs2 env false;
   let abs = Abstract1.join manager abs1 abs2 in
-  Abstract1.minimize_environment_with manager abs;
+  (*Abstract1.minimize_environment_with manager abs;*)
   if Config.symb_debug() then
     Format.printf "\nAbstracted constraints after join: %a@.\n%!" Abstract1.print abs;
+  if Config.symb_debug() then
+    Format.printf "\nEnvironment after join: %a@.\n%!" (fun x -> Environment.print x) env;
   let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
   if Config.symb_debug() then
     Format.printf "\nFormula after join: %a@.\n%!" string_form pform;
-  let pform = syntactic_forget f1 f2 pform in
+  let pform = remove_additional_ineqs (syntactic_forget_mod_const f1 f2 pform) in
   if Config.symb_debug() then
     Format.printf "\nJoin formula after syntactic forget: %a@.\n%!" string_form pform;
   pform
