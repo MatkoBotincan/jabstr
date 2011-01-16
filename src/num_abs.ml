@@ -505,6 +505,8 @@ let remove_additional_ineqs (f : pform) : pform =
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"data_new")); _]) -> true
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_new")); _]) -> true
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_new")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_addr")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_addr")); _]) -> true
     | _ -> false
   in
   List.filter (fun pa -> remove_ineq pa = false) f
