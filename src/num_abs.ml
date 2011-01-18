@@ -67,7 +67,7 @@ let rec create_vars_from_args (arg : args) : unit =
   | Arg_op ("builtin_plus", args)
   | Arg_op ("builtin_minus", args)
   | Arg_op ("builtin_mult", args) -> List.iter create_vars_from_args args
-  | Arg_op ("numeric_const", [Arg_string (s)])
+  | Arg_op ("numeric_const", [a]) -> create_vars_from_args a
   | Arg_string s -> if is_integer_const s <> true then add_var_arg arg
   | Arg_var _ | Arg_op (_,_) -> add_var_arg arg
   | _ -> Format.printf "\ncreate_vars_from_args failed on: %s\n%!" (gen_id arg); 
@@ -98,7 +98,7 @@ let rec tr_args (arg : args) : Texpr1.expr =
     Texpr1.Binop (op, e1, e2, Texpr1.Real, Texpr1.Near) in
   match arg with
   | Arg_var _ -> Texpr1.Var (get_var arg)
-  | Arg_op ("numeric_const", [Arg_string (s)]) 
+  | Arg_op ("numeric_const", [a]) -> tr_args a
   | Arg_string s ->
     if is_integer_const s then Texpr1.Cst (Coeff.s_of_int (int_of_string s))
     else (Format.printf "\ntr_args failed on: %s\n%!" (gen_id arg); assert false)
@@ -212,9 +212,12 @@ let rec tr_linexpr (env : Environment.t) (linexpr : Linexpr1.t) : args option * 
 
 (* Translates Apron linear constraint of level 1 to formula *)
 let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
+  (*let zero = Arg_op ("numeric_const", [Arg_string "0"]) in*)
   let zero = Arg_string "0" in
   let cst = Lincons1.get_cst lincons in
   let mk_const cst = Arg_string (coeff_to_string cst) in
+  let mk_numeric_const cst = (*Arg_op ("numeric_const", [Arg_string (coeff_to_string cst)]) in*)
+    mk_const cst in
   let mk_pred e1 e2 =
     match Lincons1.get_typ lincons with
     | Lincons1.EQ -> P_EQ (e1, e2)
@@ -233,10 +236,10 @@ let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
     if (coeff_sgn cst) < 0 then 
       mk_pred zero (Arg_op ("builtin_plus", [mk_const (Coeff.neg cst); rhs]))
     else 
-      mk_pred (mk_const cst) rhs
+      mk_pred (mk_numeric_const cst) rhs
   | Some lhs, None ->
     if (coeff_sgn cst) <= 0 then 
-      mk_pred lhs (mk_const (Coeff.neg cst)) 
+      mk_pred lhs (mk_numeric_const (Coeff.neg cst)) 
     else 
       mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) zero
   | Some lhs, Some rhs ->
@@ -299,7 +302,8 @@ let pform_to_abstract_val (keep_eqs : bool) (f : pform) : abs_type Abstract1.t *
     if keep_eqs then num_forms @ eqs, []
     else num_forms, eqs in
   if Config.symb_debug() then
-    Format.printf "\nNumerical subformula: %a@.\n%!" string_form num_forms;
+    (Format.printf "\nNumerical subformula: %a@.\n%!" string_form num_forms;
+    if keep_eqs <> true then Format.printf "\nNumerical eqs: %a@.\n%!" string_form eqs);
 
   Hashtbl.clear var_arg_table;
   (* Create Apron variables *)
@@ -502,6 +506,7 @@ let remove_additional_ineqs (f : pform) : pform =
   let remove_ineq (pf_at : pform_at) : bool =
     match pf_at with 
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_string _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_op ("numeric_const", [Arg_string (_)])]) -> true
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"data_new")); _]) -> true
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_new")); _]) -> true
     | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_new")); _]) -> true
