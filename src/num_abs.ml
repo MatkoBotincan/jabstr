@@ -252,12 +252,16 @@ let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
 
 
 (* Determines whether given formula represents an equality setting var to a constant *)
+(* (var must contain big letters only) *)
 let is_eq_var_const (pf_at : pform_at) : bool =
   match pf_at with
-  | P_EQ (Arg_var _, Arg_string _)
-  | P_EQ (Arg_var _, Arg_op ("numeric_const", [Arg_string (_)]))
-  | P_EQ (Arg_string _, Arg_var _)
-  | P_EQ (Arg_op ("numeric_const", [Arg_string (_)]), Arg_var _) -> true
+  | P_EQ (Arg_var x, Arg_string _)
+  | P_EQ (Arg_var x, Arg_op ("numeric_const", [Arg_string (_)]))
+  | P_EQ (Arg_string _, Arg_var x)
+  | P_EQ (Arg_op ("numeric_const", [Arg_string (_)]), Arg_var x) ->
+    (match x with
+    | Vars.PVar (_, name) -> String.compare name (String.uppercase name) = 0
+    | _ -> false)
   | _ -> false
 
 
