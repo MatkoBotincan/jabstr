@@ -251,16 +251,20 @@ let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
       mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) rhs
 
 
+(***** Hardcoded hacks *****)
+      
 (* Determines whether given formula represents an equality setting var to a constant *)
 (* (var must contain big letters only) *)
 let is_eq_var_const (pf_at : pform_at) : bool =
+  let locals = ["cur_buf"; "next_buf"] in
   match pf_at with
   | P_EQ (Arg_var x, Arg_string _)
   | P_EQ (Arg_var x, Arg_op ("numeric_const", [Arg_string (_)]))
   | P_EQ (Arg_string _, Arg_var x)
   | P_EQ (Arg_op ("numeric_const", [Arg_string (_)]), Arg_var x) ->
     (match x with
-    | Vars.PVar (_, name) -> String.compare name (String.uppercase name) = 0
+    | Vars.PVar (_, name) -> 
+    (String.compare name (String.uppercase name) = 0) || (List.mem name locals)
     | _ -> false)
   | _ -> false
 
@@ -279,6 +283,24 @@ let subst_eq_var_const (vs : variable_subst) (pf_at : pform_at) : variable_subst
     | _ -> assert false  
   in 
   add_subst var term vs
+
+
+(* Removes inequalities deemed unnecessary from a formula *)
+let remove_additional_ineqs (f : pform) : pform =
+  let remove_ineq (pf_at : pform_at) : bool =
+    match pf_at with 
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_string _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_op ("numeric_const", [Arg_string (_)])]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"data_new")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_new")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_new")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_addr")); _]) -> true
+    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_addr")); _]) -> true
+    | _ -> false
+  in
+  List.filter (fun pa -> remove_ineq pa = false) f
+
+(***** End hardcoded hacks *****)
 
 
 (* Converts numerical part of the formula to Apron abstract value of level 1 leaving the remainder.
@@ -378,7 +400,11 @@ let abstract_val_to_pform (abs : 'a Abstract1.t) : pform =
 let rec abstract_val (f : pform) : pform =
   let abstract_val2 (f : pform) : pform =
     let (abs,rem) = pform_to_abstract_val false f in
-    (abstract_val_to_pform abs) @ rem
+    let pform = abstract_val_to_pform abs in
+    let pform = remove_additional_ineqs pform in
+    if Config.symb_debug() then
+      Format.printf "\nAfter syntactic forget: %a@.\n%!" string_form pform;
+    pform @ rem
   in
   match f with
   | [P_Or (f1, f2)] -> 
@@ -395,6 +421,10 @@ let rec args_eq_mod_const (arg1 : args) (arg2 : args) : bool =
     Format.fprintf formatter "%a%!" string_args arg2;
     let s2 = dump_buffer_contents buffer in
     (String.compare s1 s2) = 0
+  (*
+  | Arg_var v, _ -> VarSet.mem v (fv_args arg2 vs_empty)
+  | _, Arg_var v -> VarSet.mem v (fv_args arg1 vs_empty)
+  *)
   | Arg_op ("numeric_const", [Arg_string _]), Arg_op ("numeric_const", [Arg_string _])
   | Arg_string _, Arg_string _ -> true
   | Arg_op ("builtin_plus", [a1; a2]), Arg_op ("builtin_plus", [b1; b2])
@@ -506,21 +536,6 @@ let remove_ineqs_with_exists (f : pform) : pform =
   List.filter (fun pa -> is_ineq_with_exists pa = false) f
 
 
-let remove_additional_ineqs (f : pform) : pform =
-  let remove_ineq (pf_at : pform_at) : bool =
-    match pf_at with 
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_string _]) -> true
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"i")); Arg_op ("numeric_const", [Arg_string (_)])]) -> true
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"data_new")); _]) -> true
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_new")); _]) -> true
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_new")); _]) -> true
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"in_addr")); _]) -> true
-    | P_PPred ("LE", [Arg_var (Vars.PVar (_,"out_addr")); _]) -> true
-    | _ -> false
-  in
-  List.filter (fun pa -> remove_ineq pa = false) f
-
-
 (* Returns join of two formulae.
    Assumes there are no disjunctions in the formulae. *)
 let join (f1 : pform) (f2 : pform) : pform =
@@ -550,9 +565,10 @@ let join (f1 : pform) (f2 : pform) : pform =
   let pform = (abstract_val_to_pform abs) @ rem1 @ rem2 in
   if Config.symb_debug() then
     Format.printf "\nFormula after join: %a@.\n%!" string_form pform;
-  let pform = remove_additional_ineqs (syntactic_forget_mod_const f1 f2 pform) in
+  let pform = syntactic_forget_mod_const f1 f2 pform in
+  let pform = remove_additional_ineqs pform in
   if Config.symb_debug() then
-    Format.printf "\nJoin formula after syntactic forget: %a@.\n%!" string_form pform;
+    Format.printf "\nAfter syntactic forget: %a@.\n%!" string_form pform;
   pform
 
 
