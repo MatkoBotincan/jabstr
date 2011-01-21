@@ -251,24 +251,6 @@ let tr_lincons (env : Environment.t) (lincons : Lincons1.t) : pform_at =
       mk_pred (Arg_op ("builtin_plus", [mk_const cst; lhs])) rhs
 
 
-(***** Hardcoded hacks *****)
-      
-(* Determines whether given formula represents an equality setting var to a constant *)
-(* (var must contain big letters only) *)
-let is_eq_var_const (pf_at : pform_at) : bool =
-  let locals = ["cur_buf"; "next_buf"] in
-  match pf_at with
-  | P_EQ (Arg_var x, Arg_string _)
-  | P_EQ (Arg_var x, Arg_op ("numeric_const", [Arg_string (_)]))
-  | P_EQ (Arg_string _, Arg_var x)
-  | P_EQ (Arg_op ("numeric_const", [Arg_string (_)]), Arg_var x) ->
-    (match x with
-    | Vars.PVar (_, name) -> 
-    (String.compare name (String.uppercase name) = 0) || (List.mem name locals)
-    | _ -> false)
-  | _ -> false
-
-
 (* Adds to a substitution varible set to a constant *)
 let subst_eq_var_const (vs : variable_subst) (pf_at : pform_at) : variable_subst =
   let var,term =
@@ -283,6 +265,38 @@ let subst_eq_var_const (vs : variable_subst) (pf_at : pform_at) : variable_subst
     | _ -> assert false  
   in 
   add_subst var term vs
+
+
+(* Checks whether given formula represents an equality setting var to a constant 
+   according to a predicate *)
+let is_eq_match (pf_at : pform_at) (predicate : string -> bool) : bool =
+  match pf_at with
+  | P_EQ (Arg_var (Vars.PVar (_, name)), Arg_string _)
+  | P_EQ (Arg_var (Vars.PVar (_, name)), Arg_op ("numeric_const", [Arg_string (_)]))
+  | P_EQ (Arg_string _, Arg_var (Vars.PVar (_, name)))
+  | P_EQ (Arg_op ("numeric_const", [Arg_string (_)]), Arg_var (Vars.PVar (_, name))) ->
+    predicate name
+  | _ -> false
+
+
+(***** Hardcoded hacks *****)
+      
+(* Checks whether EQ set a var that is considered as a constant *)
+let is_eq_const (pf_at : pform_at) : bool =
+  let predicate = fun name -> (String.compare name (String.uppercase name) = 0) in
+  is_eq_match pf_at predicate
+
+(* Checks whether EQ sets a local that we want to keep *)
+let is_eq_local_keep (pf_at : pform_at) : bool =
+  let var_names = ["cur_buf"; "next_buf"] in
+  let predicate = fun name -> (List.mem name var_names) in
+  is_eq_match pf_at predicate
+
+(* Checks whether EQ sets a local that we want to discard *)
+let is_eq_local_discard (pf_at : pform_at) : bool =
+  let var_names = ["tag_elem"; "buf_elem"] in
+  let predicate = fun name -> (List.mem name var_names) in
+  is_eq_match pf_at predicate
 
 
 (* Removes inequalities deemed unnecessary from a formula *)
@@ -305,7 +319,7 @@ let remove_additional_ineqs (f : pform) : pform =
 
 (* Converts numerical part of the formula to Apron abstract value of level 1 leaving the remainder.
    Assumes there are no disjunctions in the formula. *)
-let pform_to_abstract_val (keep_eqs : bool) (f : pform) : abs_type Abstract1.t * pform =
+let pform_to_abstract_val (keep_locals : bool) (f : pform) : abs_type Abstract1.t * pform =
   (* Analogue of Array.iteri for lists *)
   let list_iteri (f : int -> 'a -> unit) (ls : 'a list) : unit =
     let rec iteri2 f n = function
@@ -317,19 +331,25 @@ let pform_to_abstract_val (keep_eqs : bool) (f : pform) : abs_type Abstract1.t *
   if Config.symb_debug() then
     Format.printf "\nBefore abstraction: %a@.\n%!" string_form f;
   (* Split numerical formulae with equalities from the rest *)
-  let (num_forms_eq, rest) = List.partition (fun pf_at -> is_numerical_pform_at pf_at) f in
-  (* Separate equalities setting var to a constant from numerical formulae *)
-  let (eqs, num_forms) = List.partition (fun pf_at -> is_eq_var_const pf_at) num_forms_eq in
+  let (num_forms, rest) = List.partition (fun pf_at -> is_numerical_pform_at pf_at) f in
+  (* Separate equalities setting local vars that we want to discard *)
+  let (eqs_discard, num_forms) = List.partition (fun pf_at -> is_eq_local_discard pf_at) num_forms in
+  (* Separate equalities setting vars to a constant that we want to keep *)
+  let (eqs_const, num_forms) = List.partition (fun pf_at -> is_eq_const pf_at) num_forms in
+  (* Separate equalities setting local vars that we want to keep *)
+  let (eqs_keep, num_forms) = List.partition (fun pf_at -> is_eq_local_keep pf_at) num_forms in
   (* Create and apply a substitution for constant propagation *)
-  let subst = List.fold_left (fun vs pf_at -> subst_eq_var_const vs pf_at) empty_subst eqs in
+  let subst = List.fold_left (fun vs pf_at -> subst_eq_var_const vs pf_at) empty_subst 
+    (eqs_const @ eqs_keep @ eqs_discard) in
   let num_forms = subst_form subst num_forms in
+  let rest = subst_form subst rest in
   
   let num_forms,eqs =
-    if keep_eqs then num_forms @ eqs, []
-    else num_forms, eqs in
+    if keep_locals then num_forms @ eqs_keep, eqs_const
+    else num_forms, eqs_const @ eqs_keep in
   if Config.symb_debug() then
     (Format.printf "\nNumerical subformula: %a@.\n%!" string_form num_forms;
-    if keep_eqs <> true then Format.printf "\nNumerical eqs: %a@.\n%!" string_form eqs);
+    Format.printf "\nNumerical eqs that won't be abstracted: %a@.\n%!" string_form eqs);
 
   Hashtbl.clear var_arg_table;
   (* Create Apron variables *)
